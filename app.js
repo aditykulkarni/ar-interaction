@@ -7,8 +7,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
-import { buildDemoChair } from './demo-chair.js?v=202610311023';
-import { loadRapier, PhysicsSim } from './physics.js?v=202610311023';
+import { XRHands } from './xrhands.js?v=202610311030';
+import { buildDemoChair } from './demo-chair.js?v=202610311030';
+import { loadRapier, PhysicsSim } from './physics.js?v=202610311030';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -80,7 +81,8 @@ let model = null, parts = [], selected = null, modelName = 'demo-chair', lastSou
 const partOf = new Map();          // node -> part
 let helper = null;
 
-const DEFAULT_CFG = { type: 'fixed', axis: 'y', pivot: 'center', min: -30, max: 30, friction: 1.5, spring: false, rolls: false };
+const DEFAULT_CFG = { type: 'fixed', axis: 'y', pivot: 'center', min: -30, max: 30, friction: 1.5, spring: false, rolls: false,
+  temp: 22, hardness: 0.7, texture: 'smooth' };   // touch properties, sent with every hand contact (for haptics)
 const isRot = c => c.type === 'hinge' || c.type === 'spin';
 
 // Guess a joint from the part's name and shape. Returns null for "fixed".
@@ -102,9 +104,9 @@ function guessJoint(name, size) {
 // { "joint": "hinge", "axis": "y", "pivot": "-x", "min": 0, "max": 90, "spring": true }
 function cfgFromExtras(node) {
   const u = node.userData || {};
-  if (!u.joint) return null;
-  const c = { type: String(u.joint) };
-  for (const k of ['axis', 'pivot', 'min', 'max', 'friction', 'spring', 'rolls']) if (u[k] !== undefined) c[k] = u[k];
+  if (!u.joint && u.temp === undefined && u.hardness === undefined) return null;
+  const c = u.joint ? { type: String(u.joint) } : {};
+  for (const k of ['axis', 'pivot', 'min', 'max', 'friction', 'spring', 'rolls', 'temp', 'hardness', 'texture']) if (u[k] !== undefined) c[k] = u[k];
   return c;
 }
 const JOINT_WORDS = /wheel|caster|castor|tyre|tire|roller|fan|rotor|propell|blade|gear|pulley|knob|dial|turbine|impeller|door|lid|hatch|flap|cover|visor|drawer|tray|piston|plunger|rod|slide|ram|telescop|back|recline|lever|handle|pedal|trigger|seat|swivel|turntable|turret|head|platter|carousel/i;
@@ -374,6 +376,7 @@ function select(p) {
   $('edType').value = c.type; $('edAxis').value = c.axis; $('edPivot').value = c.pivot;
   $('edMin').value = c.min; $('edMax').value = c.max; $('edFriction').value = c.friction;
   $('edSpring').checked = !!c.spring; $('edRolls').checked = !!c.rolls;
+  $('edTemp').value = c.temp ?? 22; $('edHard').value = c.hardness ?? 0.7; $('edTexture').value = c.texture || 'smooth';
   syncEditorVisibility();
 }
 function syncEditorVisibility() {
@@ -391,6 +394,7 @@ function editorChanged() {
     type: $('edType').value, axis: $('edAxis').value, pivot: $('edPivot').value,
     min: +$('edMin').value, max: +$('edMax').value, friction: +$('edFriction').value,
     spring: $('edSpring').checked, rolls: $('edRolls').checked,
+    temp: +$('edTemp').value, hardness: +$('edHard').value, texture: $('edTexture').value,
   });
   if (old !== p.cfg.type && p.cfg.type === 'slider' && Math.abs(p.cfg.max) > 200) { p.cfg.min = 0; p.cfg.max = 20; $('edMin').value = 0; $('edMax').value = 20; }
   syncEditorVisibility();
@@ -402,7 +406,7 @@ function editorChanged() {
   startPhysics();
 }
 function isDescendant(n, anc) { for (let x = n.parent; x; x = x.parent) if (x === anc) return true; return false; }
-for (const id of ['edType', 'edAxis', 'edPivot', 'edMin', 'edMax', 'edFriction', 'edSpring', 'edRolls']) $(id).addEventListener('change', editorChanged);
+for (const id of ['edType', 'edAxis', 'edPivot', 'edMin', 'edMax', 'edFriction', 'edSpring', 'edRolls', 'edTemp', 'edHard', 'edTexture']) $(id).addEventListener('change', editorChanged);
 
 $('saveCfg').onclick = () => {
   const out = { model: modelName, parts: Object.fromEntries(parts.map(p => [p.name, p.cfg])) };
@@ -623,19 +627,24 @@ $('start').onclick = async () => {
     video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: 1280, height: 720 } });
     await video.play();
   } catch (e) { setStatus('Camera blocked: ' + e.message, true); return; }
-  if (!landmarker) {
-    setStatus('Loading hand tracker…');
-    try {
-      const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
-      const fs = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-      landmarker = await HandLandmarker.createFromOptions(fs, {
-        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
-        runningMode: 'VIDEO', numHands: 2,
-      });
-    } catch (e) { setStatus('Hand tracker failed (mouse still works): ' + e.message, true); return; }
-  }
+  setStatus('Loading hand tracker…');
+  try { await ensureLandmarker(); } catch (e) { setStatus('Hand tracker failed (mouse still works): ' + e.message, true); return; }
   setStatus('Hands ready: pinch a part of the model');
 };
+let landmarkerP = null;
+function ensureLandmarker() {
+  landmarkerP ||= (async () => {
+    const { FilesetResolver, HandLandmarker } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const fs = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    landmarker = await HandLandmarker.createFromOptions(fs, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
+      runningMode: 'VIDEO', numHands: 2,
+    });
+    return landmarker;
+  })();
+  landmarkerP.catch(() => { landmarkerP = null; });
+  return landmarkerP;
+}
 
 function lmToScreen(p) {
   const vw = video.videoWidth, vh = video.videoHeight, cw = innerWidth, ch = innerHeight;
@@ -847,7 +856,9 @@ const arHint = t => { $('arHint').textContent = t; };
 $('enterAR').onclick = async () => {
   try {
     const session = await navigator.xr.requestSession('immersive-ar', {
-      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation'], domOverlay: { root: $('arOverlay') },
+      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation', 'camera-access', 'depth-sensing'],
+      domOverlay: { root: $('arOverlay') },
+      depthSensing: { usagePreference: ['cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] },
     });
     const has = f => !session.enabledFeatures || session.enabledFeatures.includes(f);
     const floorMode = session.enabledFeatures ? session.enabledFeatures.includes('local-floor') : false;
@@ -871,6 +882,9 @@ $('enterAR').onclick = async () => {
     session.addEventListener('selectstart', xrSelectStart);
     session.addEventListener('selectend', e => { const id = 'xr' + inputId(e.inputSource); grabEnd(id); xr?.held.delete(e.inputSource); });
     session.addEventListener('end', xrEnded);
+    // hand tracking on the AR camera image (loads in the background)
+    ensureLandmarker().then(lm => { if (xr?.session === session) xrHands.start(session, lm); })
+      .catch(e => { xr && (xr.handError = e.message); });
   } catch (e) { setStatus('Could not start AR: ' + e.message, true); }
 };
 $('exitAR').addEventListener('beforexrselect', e => e.preventDefault());
@@ -949,8 +963,95 @@ function xrUpdate(frame) {
       : 'This browser does not report surfaces. Tap to place 1.5 m ahead, or try Chrome.');
   }
   for (const [src, id] of xr.held) if (rayFromSpace(src.targetRaySpace, frame)) sim.grabMove(id, raycaster.ray);
+  if (xr.placed) {
+    const hands = xrHands.update(frame, xr.refSpace);
+    applyXRHands(hands);
+    if (xr.frames % 15 === 0) {
+      const hs = xrHands.status;
+      const touching = lastTouch.length ? ' · ' + lastTouch.map(t => `${t.finger} ${t.force.toFixed(1)} N`).join(', ') : '';
+      arHint(hs === 'no-camera' ? 'Placed. This phone/browser does not share the AR camera, so use touch: drag the object.'
+        : hs === 'off' || hs === 'waiting' ? (xr.handError ? 'Hand tracker failed: ' + xr.handError : 'Placed. Loading hand tracking…')
+        : `Hands: ${hs}. Reach in and push it, or pinch it to grab${touching}`);
+    }
+  }
+}
+
+// ---- real hands in AR: colliders, pinch-grab, occlusion, haptic contact events
+const xrHands = new XRHands(renderer);
+const TIPS = [4, 8, 12, 16, 20], FINGER = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+const BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
+// invisible spheres that write depth only: the real hand hides the virtual object behind it
+const OCC_PER_HAND = 21 + BONES.length;
+const occluder = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 8), new THREE.MeshBasicMaterial({ colorWrite: false }), OCC_PER_HAND * 2);
+occluder.renderOrder = -1; occluder.frustumCulled = false; occluder.count = 0;
+const tipDots = new THREE.InstancedMesh(new THREE.SphereGeometry(0.007, 10, 8), new THREE.MeshBasicMaterial({ color: 0x55ddff }), 10);
+tipDots.frustumCulled = false; tipDots.count = 0;
+scene.add(occluder, tipDots);
+const handGrab = new Map();   // hand id -> { offset }
+let lastTouch = [];
+const tmpM4 = new THREE.Matrix4();
+
+function applyXRHands(hands) {
+  const live = new Set();
+  let oi = 0, ti = 0;
+  for (const h of hands || []) {
+    live.add(h.id);
+    const P = h.pts;
+    // occluders + fingertip dots
+    for (let k = 0; k < 21; k++) occluder.setMatrixAt(oi++, tmpM4.makeScale(0.011, 0.011, 0.011).setPosition(P[k]));
+    for (const [a, b] of BONES) occluder.setMatrixAt(oi++, tmpM4.makeScale(0.01, 0.01, 0.01).setPosition(P[a].clone().lerp(P[b], 0.5)));
+    for (const k of TIPS) tipDots.setMatrixAt(ti++, tmpM4.makeTranslation(P[k].x, P[k].y, P[k].z));
+    if (!sim.world) continue;
+    // physics colliders: fingertips, last finger joints, palm
+    const palm = [0, 5, 9, 13, 17].reduce((v, k) => v.add(P[k]), V3()).multiplyScalar(0.2);
+    const spheres = TIPS.map((k, f) => ({ p: P[k], r: 0.011, finger: FINGER[f] }))
+      .concat([3, 7, 11, 15, 19].map((k, f) => ({ p: P[k], r: 0.01, finger: FINGER[f] })))
+      .concat([{ p: palm, r: 0.035, finger: 'palm' }]);
+    sim.setHand(h.id, spheres);
+    // pinch to grab: only if the pinch is on (or very near) the object's surface
+    const gid = 'xrhand-' + h.id;
+    const g = handGrab.get(h.id);
+    if (h.pinch && !g) {
+      raycaster.ray.origin.copy(h.origin);
+      raycaster.ray.direction.copy(h.pinchPoint).sub(h.origin).normalize();
+      const hit = hitRay();
+      const reach = h.origin.distanceTo(h.pinchPoint);
+      if (hit && Math.abs(hit.distance - reach) < 0.12 && sim.grabStart(gid, hit, viewCamera())) {
+        handGrab.set(h.id, { offset: hit.point.clone().sub(h.pinchPoint) });
+        sim.setHandEnabled(h.id, false);
+      }
+    } else if (h.pinch && g) {
+      sim.setGrabTarget(gid, h.pinchPoint.clone().add(g.offset));
+    } else if (!h.pinch && g) {
+      sim.grabEnd(gid); handGrab.delete(h.id); sim.setHandEnabled(h.id, true);
+    }
+  }
+  occluder.count = oi; occluder.instanceMatrix.needsUpdate = true;
+  tipDots.count = ti; tipDots.instanceMatrix.needsUpdate = true;
+  // hands that disappeared
+  for (const id of [...handGrab.keys()]) if (!live.has(id)) { sim.grabEnd('xrhand-' + id); handGrab.delete(id); sim.setHandEnabled(id, true); }
+  for (const id of sim.hands?.keys() || []) if (!live.has(id)) sim.setHand(id, null);
+  emitContacts();
+}
+
+// Haptics hook: every frame with contact, dispatches window 'haptics' events, e.g.
+// { hand: 'Right', finger: 'index', force: 2.1, part: 'Seat', temp: 22, hardness: 0.7, texture: 'smooth' }
+// A glove driver (Web Bluetooth) can listen with: addEventListener('haptics', e => send(e.detail))
+function emitContacts() {
+  const raw = sim.world ? sim.takeContacts() : [];
+  const byFinger = new Map();
+  for (const c of raw) {
+    const k = c.hand + '/' + c.finger;
+    if (!byFinger.has(k) || byFinger.get(k).force < c.force) byFinger.set(k, c);
+  }
+  lastTouch = [...byFinger.values()].map(c => {
+    const cfg = c.rec.part ? c.rec.part.cfg : (parts.find(p => p.cfg.type === 'fixed')?.cfg || DEFAULT_CFG);
+    return { hand: c.hand, finger: c.finger, force: c.force, part: c.rec.part ? c.rec.part.name : 'body', temp: cfg.temp ?? 22, hardness: cfg.hardness ?? 0.7, texture: cfg.texture || 'smooth' };
+  });
+  if (lastTouch.length) dispatchEvent(new CustomEvent('haptics', { detail: lastTouch }));
 }
 function xrEnded() {
+  xrHands.stop(); applyXRHands([]); handGrab.clear();
   xr = null; reticle.visible = false;
   renderer.xr.enabled = false;
   video.hidden = false; $('panel').classList.remove('hidden'); $('togglePanel').hidden = false; $('arOverlay').hidden = true;
@@ -960,5 +1061,5 @@ function xrEnded() {
 }
 
 // handles for debugging / automated tests
-window.__ar = { sim, obj, torch, lightTarget, get parts() { return parts; }, toScreen: v => toScreenPx(V3(...v)), toScreenLocal: v => toScreenPx(world.localToWorld(V3(...v))), hitAt, THREE, world };
+window.__ar = { applyXRHands, get lastTouch() { return lastTouch; }, sim, obj, torch, lightTarget, get parts() { return parts; }, toScreen: v => toScreenPx(V3(...v)), toScreenLocal: v => toScreenPx(world.localToWorld(V3(...v))), hitAt, THREE, world };
 $('physics').onchange = () => ($('physics').checked ? startPhysics() : stopPhysics());

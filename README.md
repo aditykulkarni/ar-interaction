@@ -22,7 +22,18 @@ With **Real physics** on (the default), the model is simulated with [Rapier](htt
 
 ## Android AR mode
 
-On Chrome for Android (with Google Play Services for AR), an **Enter AR** button appears. Move the phone to find a surface (floor, desk): a white ring marks a detected surface, a yellow ring the phone's estimated floor height (used when plain or shiny floors can't be detected). Tap to place the model at true scale, then touch and drag it to push, tip or roll it. **Place again** moves it to another surface. Hand tracking and torch lighting are webcam-mode features; in AR you interact by touch. iPhone Safari does not support WebXR AR, so iPhone would need a native ARKit app.
+On Chrome for Android (with Google Play Services for AR), an **Enter AR** button appears. Move the phone to find a surface (floor, desk): a white ring marks a detected surface, a yellow ring the phone's estimated floor height (used when plain or shiny floors can't be detected). Tap to place the model at true scale, then touch and drag it to push, tip or roll it. **Place again** moves it to another surface. In AR, **your real hands are tracked too** (Chrome's Raw Camera Access): MediaPipe runs on the AR camera image, each hand point is placed in 3D using the phone's depth sensor when it has one (otherwise estimated from hand size), and the hand becomes physics colliders. Push the object with your hand, or pinch it to grab it. Your hand also hides the object when it's in front of it. Touch still works as a fallback.
+
+### Haptics hook
+
+Every frame a hand touches the object, the page dispatches a `haptics` event:
+
+```js
+addEventListener('haptics', e => console.log(e.detail));
+// [{ hand: 'Right', finger: 'index', force: 2.1, part: 'Seat', temp: 22, hardness: 0.7, texture: 'smooth' }]
+```
+
+`temp`, `hardness` and `texture` are per-part touch properties (set in the part editor or as glTF extras), intended for a haptic glove (e.g. ESP32 + vibration motors / Peltier elements over Web Bluetooth). iPhone Safari does not support WebXR AR, so iPhone would need a native ARKit app.
 
 Model size in AR comes from the **Model** settings: pick the file's units for true size, or **Fit to size** with e.g. `0.3` m for a tabletop miniature.
 
@@ -64,4 +75,5 @@ Joints can also be stored in the model itself as glTF `extras` (custom propertie
 - [x] WebXR AR mode for Android Chrome: tap a real surface to place, true scale (needs on-device testing)
 - [x] Draco / Meshopt compressed GLB support
 - [ ] Collide with real-world geometry in AR (WebXR depth / planes)
-- [ ] Hand tracking inside AR mode
+- [x] Hand tracking inside AR mode (needs on-device testing)
+- [ ] Haptic glove driver (Web Bluetooth)

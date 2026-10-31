@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Hands-on AR: interact with any 3D model</title>
-<link rel="stylesheet" href="style.css?v=202610311023">
+<link rel="stylesheet" href="style.css?v=202610311030">
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
@@ -88,6 +88,12 @@
         <label><input type="checkbox" id="edSpring"> Springs back to rest</label>
         <label id="edRollsL"><input type="checkbox" id="edRolls"> Turns when the object rolls (wheel)</label>
       </div>
+      <h3>Touch (for haptics)</h3>
+      <div class="row">
+        <label>Temp <input type="number" id="edTemp" step="1" value="22"> °C</label>
+        <label>Hardness <input type="number" id="edHard" step="0.1" min="0" max="1" value="0.7"></label>
+      </div>
+      <label>Texture <select id="edTexture"><option>smooth</option><option>rough</option><option>soft</option><option>ridged</option></select></label>
     </div>
     <div class="row">
       <button id="saveCfg">Download setup</button>
@@ -101,6 +107,6 @@
   <div class="row"><button id="placeAgain">Place again</button><button id="exitAR">Exit AR</button></div>
 </div>
 
-<script type="module" src="app.js?v=202610311023"></script>
+<script type="module" src="app.js?v=202610311030"></script>
 </body>
 </html>

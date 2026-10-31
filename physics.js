@@ -96,6 +96,9 @@ export class PhysicsSim {
     }
     this.totalMass = this.recs.reduce((s, r) => s + r.body.mass(), 0);
     this.objOf = new Map(this.recs.map(r => [r.obj, r]));
+    this.bodyRec = new Map(this.recs.map(r => [r.body.handle, r]));
+    this.hands = new Map(); this.handColliders = new Map(); this.contacts = [];
+    this.events = new R.EventQueue(true);
   }
 
   addColliders(rec) {
@@ -137,6 +140,7 @@ export class PhysicsSim {
       driver?.removeFromParent();
     }
     this.saved = []; this.recs = []; this.grabs.clear();
+    this.hands = new Map(); this.contacts = []; this.handColliders = new Map();
     this.world.free(); this.world = null;
   }
 
@@ -155,6 +159,39 @@ export class PhysicsSim {
     return g;
   }
   grabMove(id, ray) { const g = this.grabs.get(id); if (g) ray.intersectPlane(g.plane, g.target); }
+  setGrabTarget(id, p) { const g = this.grabs.get(id); if (g) g.target.copy(p); }
+
+  // ---- real hands as colliders: kinematic spheres that follow tracked hand points.
+  // spheres: [{ p: Vector3, r: metres, finger: 'thumb'|'index'|...|'palm' }] or null when the hand is gone
+  setHand(id, spheres) {
+    if (!this.world) return;
+    let h = this.hands.get(id);
+    if (!spheres) { if (h) for (const b of h.bodies) b.setTranslation({ x: 0, y: -100, z: 0 }, false); return; }
+    if (!h || h.bodies.length !== spheres.length) {
+      if (h) for (const b of h.bodies) this.world.removeRigidBody(b);
+      h = { bodies: [], fingers: [] };
+      for (const s of spheres) {
+        const b = this.world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(s.p.x, s.p.y, s.p.z));
+        const c = this.world.createCollider(R.ColliderDesc.ball(s.r).setFriction(1.0)
+          .setActiveEvents(R.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(0.05), b);
+        (this.handColliders ||= new Map()).set(c.handle, { hand: id, finger: s.finger });
+        h.bodies.push(b); h.fingers.push(s.finger);
+      }
+      this.hands.set(id, h);
+    }
+    spheres.forEach((s, k) => {
+      const b = h.bodies[k], t = b.translation();
+      // teleport on big jumps (hand re-appeared), otherwise move kinematically so contacts push properly
+      if (Math.hypot(t.x - s.p.x, t.y - s.p.y, t.z - s.p.z) > 0.25) b.setTranslation(s.p, true);
+      else b.setNextKinematicTranslation(s.p);
+    });
+  }
+  setHandEnabled(id, on) {
+    const h = this.hands.get(id); if (!h) return;
+    for (const b of h.bodies) { for (let i = 0; i < b.numColliders(); i++) b.collider(i).setEnabled(on); }
+  }
+  /** contacts since the last step: [{ hand, finger, force (N), part }] */
+  takeContacts() { const c = this.contacts || []; this.contacts = []; return c; }
   grabEnd(id) { this.grabs.delete(id); }
   twist(angleVel) {
     const b = this.recs[0].body;
@@ -173,7 +210,17 @@ export class PhysicsSim {
     const h = this.world.timestep;
     while (this.acc >= h) {
       for (const g of this.grabs.values()) this.applyGrab(g, h);
-      this.world.step();
+      this.world.step(this.events);
+      this.events.drainContactForceEvents(ev => {
+        const hc = this.handColliders || new Map();
+        const h1 = ev.collider1(), h2 = ev.collider2();
+        const info = hc.get(h1) || hc.get(h2);
+        if (!info) return;
+        const other = this.world.getCollider(hc.has(h1) ? h2 : h1);
+        const rec = other?.parent() ? this.bodyRec.get(other.parent().handle) : null;
+        if (!rec) return;
+        (this.contacts ||= []).push({ hand: info.hand, finger: info.finger, force: ev.totalForceMagnitude(), rec });
+      });
       this.acc -= h;
     }
     for (const r of this.recs) {
