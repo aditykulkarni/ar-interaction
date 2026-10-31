@@ -29,6 +29,8 @@
     <label><input type="checkbox" id="light" checked> Match room lighting</label>
     <label>View height <input type="range" id="camH" min="0.4" max="2.6" step="0.05" value="1.35"></label>
     <label>View distance <input type="range" id="camD" min="0.8" max="6" step="0.05" value="2.6"></label>
+    <button id="enterAR" hidden>Enter AR (place on a real surface)</button>
+    <div id="arNote" class="note"></div>
     <div id="status">Mouse mode. Start the camera to use your hands.</div>
   </section>
 
@@ -50,6 +52,7 @@
       <button id="resetPose">Reset pose</button>
       <button id="demo">Demo chair</button>
     </div>
+    <label><input type="checkbox" id="physics" checked> Real physics (gravity, tipping, collisions)</label>
     <label>Floor friction <input type="range" id="friction" min="0.2" max="8" step="0.1" value="1.6"></label>
     <div id="modelInfo"></div>
   </section>
@@ -90,6 +93,11 @@
       <label class="file small">Load setup<input type="file" id="cfgFile" accept=".json"></label>
     </div>
   </section>
+</div>
+
+<div id="arOverlay" hidden>
+  <div id="arHint"></div>
+  <div class="row"><button id="placeAgain">Place again</button><button id="exitAR">Exit AR</button></div>
 </div>
 
 <script type="module" src="app.js"></script>

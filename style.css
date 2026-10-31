@@ -30,3 +30,6 @@ label.file.small{background:#444;color:#eee}
 #partList li.sel{background:#264a6a}
 #partList li span.t{color:#8c8;font-size:11px;white-space:nowrap}
 #partList li span.t.fixed{color:#777}
+.note{color:#aaa;font-size:12px;margin-top:4px}
+#arOverlay{position:absolute;left:0;right:0;bottom:0;padding:14px;background:linear-gradient(transparent,rgba(0,0,0,.6));font-size:15px;color:#fff;text-align:center}
+#arOverlay .row{justify-content:center}

@@ -3,7 +3,10 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { buildDemoChair } from './demo-chair.js';
+import { loadRapier, PhysicsSim } from './physics.js';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -49,6 +52,10 @@ const floorPlane = new THREE.Plane(UP.clone(), 0);
 const world = new THREE.Group();
 scene.add(world);
 const obj = { pos: new THREE.Vector2(), vel: new THREE.Vector2(), yaw: 0, yawVel: 0 };
+const home = V3();   // where the object is placed (moves to the tapped surface in AR)
+let floorY = 0;
+let xr = null;     // active WebXR session state (Android AR)
+function setFloor(y) { floorY = y; floor.position.y = y; floorPlane.constant = -y; }
 const BOUND = { x: 1.6, zMin: -2, zMax: 0.8 };
 
 // ---------------------------------------------------------------- parts & joints
@@ -145,15 +152,42 @@ function limits(p) {
 }
 
 // ---------------------------------------------------------------- loading
+// ---------------------------------------------------------------- physics engine hookup
+const sim = new PhysicsSim();
+let rapierReady = false;
+const physicsOn = () => rapierReady && $('physics').checked && !!model;
+function stopPhysics() {
+  if (!sim.world) return;
+  sim.teardown();
+  // carry the pose back into the kinematic state, standing upright
+  obj.pos.set(world.position.x, world.position.z);
+  obj.yaw = new THREE.Euler().setFromQuaternion(world.quaternion, 'YXZ').y;
+  obj.vel.set(0, 0); obj.yawVel = 0;
+  world.position.y = floorY; world.rotation.set(0, obj.yaw, 0);
+  world.updateMatrixWorld(true);
+}
+function startPhysics() {
+  stopPhysics();
+  if (!physicsOn()) return;
+  for (const p of parts) { p.value = 0; p.vel = 0; applyValue(p); }
+  sim.build(scene, world, parts, floorY);
+}
+loadRapier().then(() => { rapierReady = true; startPhysics(); })
+  .catch(e => { $('physics').checked = false; $('physics').disabled = true; setStatus('Physics engine failed to load: ' + e.message, true); });
+
 function clearModel() {
+  sim.teardown();
   for (const p of parts) unbuildJoint(p);
   if (model) world.remove(model);
   model = null; parts = []; partOf.clear(); select(null);
   grabs.clear();
 }
 function resetPose() {
-  Object.assign(obj, { pos: new THREE.Vector2(), vel: new THREE.Vector2(), yaw: 0, yawVel: 0 });
+  sim.teardown();
+  Object.assign(obj, { pos: new THREE.Vector2(home.x, home.z), vel: new THREE.Vector2(), yaw: home.yaw || 0, yawVel: 0 });
+  world.position.set(home.x, floorY, home.z); world.rotation.set(0, obj.yaw, 0); world.updateMatrixWorld(true);
   for (const p of parts) { p.value = 0; p.vel = 0; applyValue(p); }
+  startPhysics();
 }
 
 function setModel(root, name) {
@@ -161,6 +195,7 @@ function setModel(root, name) {
   modelName = name;
   Object.assign(obj, { pos: new THREE.Vector2(), vel: new THREE.Vector2(), yaw: 0, yawVel: 0 });
   world.position.set(0, 0, 0); world.rotation.set(0, 0, 0); world.updateMatrixWorld(true);
+  world.visible = !xr || xr.placed;
 
   // orientation and units
   const holder = new THREE.Group();
@@ -209,6 +244,7 @@ function setModel(root, name) {
   size = box.getSize(V3());
   $('modelInfo').textContent = `${name}: ${parts.length} part(s), ${moving} moving · ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} m`;
   renderPartList();
+  startPhysics();
   setStatus(moving ? `Loaded ${name}. Pinch a coloured part in the list to work it.` : `Loaded ${name}. No moving parts guessed: tick "click to select" and give parts a motion.`);
 }
 
@@ -220,7 +256,11 @@ async function loadFile(file) {
     let root;
     if (ext === 'glb' || ext === 'gltf') {
       const data = ext === 'glb' ? await file.arrayBuffer() : await file.text();
-      root = (await new GLTFLoader().parseAsync(data, '')).scene;
+      const gl = new GLTFLoader();
+      // compressed GLBs (Draco from Blender, Meshopt from gltfpack) load directly
+      gl.setDRACOLoader(new DRACOLoader().setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/'));
+      gl.setMeshoptDecoder(MeshoptDecoder);
+      root = (await gl.parseAsync(data, '')).scene;
     } else if (ext === 'obj') {
       root = new OBJLoader().parse(await file.text());
       root.traverse(m => { if (m.isMesh) m.material = new THREE.MeshStandardMaterial({ color: 0xb0b4ba, roughness: 0.5, metalness: 0.3 }); });
@@ -289,6 +329,7 @@ function syncEditorVisibility() {
 function editorChanged() {
   if (!selected) return;
   const p = selected, old = p.cfg.type;
+  stopPhysics();
   Object.assign(p.cfg, {
     type: $('edType').value, axis: $('edAxis').value, pivot: $('edPivot').value,
     min: +$('edMin').value, max: +$('edMax').value, friction: +$('edFriction').value,
@@ -301,6 +342,7 @@ function editorChanged() {
   buildJoint(p);
   persist();
   renderPartList();
+  startPhysics();
 }
 function isDescendant(n, anc) { for (let x = n.parent; x; x = x.parent) if (x === anc) return true; return false; }
 for (const id of ['edType', 'edAxis', 'edPivot', 'edMin', 'edMax', 'edFriction', 'edSpring', 'edRolls']) $(id).addEventListener('change', editorChanged);
@@ -326,7 +368,17 @@ $('togglePanel').onclick = () => $('panel').classList.toggle('hidden');
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 function rayAt(sx, sy) { ndc.set(sx / innerWidth * 2 - 1, -(sy / innerHeight) * 2 + 1); raycaster.setFromCamera(ndc, camera); }
-function hitAt(sx, sy) { if (!model) return null; rayAt(sx, sy); return raycaster.intersectObject(model, true)[0] || null; }
+const viewCamera = () => (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
+function hitAt(sx, sy) {
+  if (!model) return null;
+  rayAt(sx, sy);
+  return hitRay();
+}
+function hitRay() {
+  if (!model || !world.visible) return null;
+  const targets = sim.world ? sim.roots() : [model];
+  return raycaster.intersectObjects(targets, true)[0] || null;
+}
 function floorPoint(sx, sy) { rayAt(sx, sy); const p = V3(); return raycaster.ray.intersectPlane(floorPlane, p) ? new THREE.Vector2(p.x, p.z) : null; }
 function toScreenPx(v) { const p = v.clone().project(camera); return new THREE.Vector2((p.x + 1) / 2 * innerWidth, (1 - p.y) / 2 * innerHeight); }
 // nearest ancestor part (any type) / nearest moving ancestor part
@@ -339,6 +391,13 @@ function grabStart(id, sx, sy) {
   if ($('editMode').checked) { select(owningPart(hit.object, false)); return null; }
   const part = owningPart(hit.object, true);
   const g = { sx, sy, t: performance.now() };
+  if (sim.world) {
+    // physics: a spring pulls the grabbed point toward your hand; joints and gravity do the rest
+    if (!sim.grabStart(id, hit, viewCamera())) return null;
+    g.physics = true; g.part = part; g.free = !part;
+    grabs.set(id, g);
+    return g;
+  }
   if (part) {
     g.part = part; part.grabbed = true;
     g.localGrab = part.pivot.worldToLocal(hit.point.clone());
@@ -357,7 +416,10 @@ function grabMove(id, sx, sy, dt) {
   if (!g) return;
   dt = Math.max(dt, 1 / 120);
   const d = new THREE.Vector2(sx - g.sx, sy - g.sy);
-  if (g.part) {
+  if (g.physics) {
+    if (g.rotate) sim.twist(d.x / innerWidth * 8 / dt);
+    else { rayAt(sx, sy); sim.grabMove(id, raycaster.ray); }
+  } else if (g.part) {
     // Linearise the joint at the grab point: how many screen pixels does one unit of joint motion move it?
     const p = g.part, pv = p.pivot;
     const grabW = pv.localToWorld(g.localGrab.clone());
@@ -407,6 +469,7 @@ function grabMove(id, sx, sy, dt) {
 function grabEnd(id) {
   const g = grabs.get(id);
   if (g?.part) g.part.grabbed = false;
+  sim.grabEnd(id);
   grabs.delete(id);
 }
 
@@ -451,6 +514,12 @@ function rollParts(disp) {
   }
 }
 function stepPhysics(dt) {
+  if (sim.world) {
+    sim.step(dt);
+    if (sim.lost) { sim.lost = false; resetPose(); setStatus('The object left the scene, so it was put back.'); }
+    if (helper) helper.update();
+    return;
+  }
   const freeGrabbed = [...grabs.values()].some(g => g.free);
   if (!freeGrabbed) {
     const before = obj.pos.clone();
@@ -462,7 +531,7 @@ function stepPhysics(dt) {
   const fr = +$('friction').value;
   obj.vel.multiplyScalar(Math.exp(-fr * dt));
   obj.yawVel *= Math.exp(-fr * 1.5 * dt);
-  world.position.set(obj.pos.x, 0, obj.pos.y);
+  world.position.set(obj.pos.x, floorY, obj.pos.y);
   world.rotation.y = obj.yaw;
 
   for (const p of parts) {
@@ -552,7 +621,12 @@ function trackHands() {
     if (open && !pinch && mem.palm) {
       const v = { x: knuckle.x - mem.palm.x, y: knuckle.y - mem.palm.y };
       const hit = Math.hypot(v.x, v.y) > 6 && hitAt(knuckle.x, knuckle.y);
-      if (hit) {
+      if (hit && sim.world) {
+        rayAt(mem.palm.x, mem.palm.y); const a = raycaster.ray.at(hit.distance, V3());
+        rayAt(knuckle.x, knuckle.y); const b = raycaster.ray.at(hit.distance, V3());
+        const dir = b.sub(a);
+        sim.shove(hit, dir, dir.length() / Math.max(handDt, 1 / 60));
+      } else if (hit) {
         const part = owningPart(hit.object, true);
         if (part && part.cfg.type !== 'slider') part.vel += (v.x / innerWidth) * 25 * (isRot(part.cfg) ? 1 : 0.1);
         else {
@@ -638,25 +712,120 @@ addEventListener('resize', resize);
 resize();
 
 let prev = performance.now(), frame = 0;
-function loop(now) {
-  requestAnimationFrame(loop);
+function loop(now, xrFrame) {
   const dt = Math.min((now - prev) / 1000, 1 / 20); prev = now;
-  trackHands();
-  if (++frame % 3 === 0) sampleLight();
+  if (xrFrame && xr) xrUpdate(xrFrame);
+  else { trackHands(); if (++frame % 3 === 0) sampleLight(); }
   const k = Math.min(1, dt * 4);
   hemi.intensity += (lightTarget.amb - hemi.intensity) * k;
   sun.intensity += (lightTarget.key - sun.intensity) * k;
   hemi.color.lerp(lightTarget.color, k); sun.color.lerp(lightTarget.color, k);
   sun.position.lerp(lightTarget.dir, k);
   // the torch is held near the camera, so the virtual spotlight shines from just beside it
-  torch.position.copy(camera.position).add(V3(0.15, -0.1, 0));
+  torch.position.copy(viewCamera().position).add(V3(0.15, -0.1, 0));
   torch.target.position.lerp(lightTarget.torchAt, lightTarget.torch > 0 ? Math.min(1, dt * 12) : 0);
   torch.intensity += (lightTarget.torch * 25 - torch.intensity) * Math.min(1, dt * 10);
   stepPhysics(dt);
   renderer.render(scene, camera);
 }
 loadDemo();
-requestAnimationFrame(loop);
+renderer.setAnimationLoop(loop);
+
+// ---------------------------------------------------------------- Android AR (WebXR)
+// Chrome on Android finds real surfaces (hit-test). Tap a surface to place the object at true scale;
+// then touch and drag it: the drag is a spring on the touched point, so physics does the rest.
+const reticle = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.09, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+reticle.matrixAutoUpdate = false; reticle.visible = false;
+scene.add(reticle);
+
+if (navigator.xr?.isSessionSupported) {
+  navigator.xr.isSessionSupported('immersive-ar').then(ok => {
+    if (ok) $('enterAR').hidden = false;
+    else $('arNote').textContent = 'AR mode (real surfaces, true scale) needs Chrome on an Android phone with Google Play Services for AR.';
+  }).catch(() => {});
+} else $('arNote').textContent = 'AR mode (real surfaces, true scale) needs Chrome on an Android phone, opened over HTTPS.';
+
+$('enterAR').onclick = async () => {
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('arOverlay') },
+    });
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local');
+    await renderer.xr.setSession(session);
+    const refSpace = renderer.xr.getReferenceSpace();
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    const hitSource = await session.requestHitTestSource({ space: viewerSpace });
+    xr = { session, refSpace, hitSource, placed: false, held: new Map(), lastHit: null };
+    if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+    video.hidden = true; $('panel').classList.add('hidden'); $('togglePanel').hidden = true;
+    $('arOverlay').hidden = false;
+    $('arHint').textContent = 'Move the phone slowly to find a surface, then tap to place.';
+    $('physics').checked = true;
+    sim.teardown(); world.visible = false;
+    lightTarget.amb = 1; lightTarget.key = 1.6; lightTarget.torch = 0;
+    session.addEventListener('selectstart', xrSelectStart);
+    session.addEventListener('selectend', e => { const id = 'xr' + inputId(e.inputSource); grabEnd(id); xr?.held.delete(e.inputSource); });
+    session.addEventListener('end', xrEnded);
+  } catch (e) { setStatus('Could not start AR: ' + e.message, true); }
+};
+$('exitAR').addEventListener('beforexrselect', e => e.preventDefault());
+$('exitAR').onclick = () => xr?.session.end();
+$('placeAgain').addEventListener('beforexrselect', e => e.preventDefault());
+$('placeAgain').onclick = () => { if (xr) { xr.placed = false; sim.teardown(); world.visible = false; $('arHint').textContent = 'Tap a surface to place.'; } };
+
+const inputIds = new WeakMap(); let nextInputId = 1;
+function inputId(src) { if (!inputIds.has(src)) inputIds.set(src, nextInputId++); return inputIds.get(src); }
+function rayFromInput(src, frame) {
+  const pose = frame.getPose(src.targetRaySpace, xr.refSpace);
+  if (!pose) return false;
+  const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+  raycaster.ray.origin.setFromMatrixPosition(m);
+  raycaster.ray.direction.set(0, 0, -1).transformDirection(m);
+  return true;
+}
+function xrSelectStart(e) {
+  if (!xr) return;
+  const frame = e.frame, src = e.inputSource;
+  if (xr.placed && rayFromInput(src, frame)) {
+    const id = 'xr' + inputId(src);
+    const hit = hitRay();
+    if (hit) {
+      const part = owningPart(hit.object, true);
+      if (sim.world && sim.grabStart(id, hit, viewCamera())) { grabs.set(id, { physics: true, part, free: !part, sx: 0, sy: 0 }); xr.held.set(src, id); return; }
+    }
+  }
+  if (xr.lastHit) placeAt(xr.lastHit);
+}
+function placeAt(m) {
+  const pos = V3().setFromMatrixPosition(m);
+  sim.teardown();
+  setFloor(pos.y);
+  const cam = viewCamera().getWorldPosition(V3());
+  home.copy(pos); home.yaw = Math.atan2(cam.x - pos.x, cam.z - pos.z);   // front of the model faces you
+  xr.placed = true; world.visible = true;
+  resetPose();
+  $('arHint').textContent = 'Drag the object to push, tip or roll it. Drag a moving part to work it.';
+}
+function xrUpdate(frame) {
+  const res = frame.getHitTestResults(xr.hitSource);
+  if (res.length) {
+    const pose = res[0].getPose(xr.refSpace);
+    reticle.matrix.fromArray(pose.transform.matrix);
+    xr.lastHit = reticle.matrix.clone();
+    reticle.visible = !xr.placed;
+  } else { reticle.visible = false; xr.lastHit = null; }
+  for (const [src, id] of xr.held) if (rayFromInput(src, frame)) sim.grabMove(id, raycaster.ray);
+}
+function xrEnded() {
+  xr = null; reticle.visible = false;
+  renderer.xr.enabled = false;
+  video.hidden = false; $('panel').classList.remove('hidden'); $('togglePanel').hidden = false; $('arOverlay').hidden = true;
+  setFloor(0); home.set(0, 0, 0); home.yaw = 0; world.visible = true;
+  resetPose(); resize();
+  setStatus('Left AR mode.');
+}
 
 // handles for debugging / automated tests
-window.__ar = { obj, torch, lightTarget, get parts() { return parts; }, toScreen: v => toScreenPx(V3(...v)), toScreenLocal: v => toScreenPx(world.localToWorld(V3(...v))), hitAt, THREE, world };
+window.__ar = { sim, obj, torch, lightTarget, get parts() { return parts; }, toScreen: v => toScreenPx(V3(...v)), toScreenLocal: v => toScreenPx(world.localToWorld(V3(...v))), hitAt, THREE, world };
+$('physics').onchange = () => ($('physics').checked ? startPhysics() : stopPhysics());
