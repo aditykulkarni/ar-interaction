@@ -7,8 +7,8 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
-import { buildDemoChair } from './demo-chair.js?v=202610311015';
-import { loadRapier, PhysicsSim } from './physics.js?v=202610311015';
+import { buildDemoChair } from './demo-chair.js?v=202610311023';
+import { loadRapier, PhysicsSim } from './physics.js?v=202610311023';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -574,7 +574,7 @@ function stepPhysics(dt) {
   if (sim.world) {
     sim.step(dt);
     if (sim.lost) { sim.lost = false; resetPose(); setStatus('The object left the scene, so it was put back.'); }
-    if (helper) helper.update();
+    if (helper) { helper.visible = $('editMode').checked && !xr; helper.update(); }
     return;
   }
   const freeGrabbed = [...grabs.values()].some(g => g.free);
@@ -603,7 +603,7 @@ function stepPhysics(dt) {
     }
     applyValue(p);
   }
-  if (helper) helper.update();
+  if (helper) { helper.visible = $('editMode').checked && !xr; helper.update(); }
 }
 
 // ---------------------------------------------------------------- webcam + hand tracking
@@ -827,13 +827,13 @@ reticle.matrixAutoUpdate = false; reticle.visible = false;
 scene.add(reticle);
 // The phone's own light estimate (ARCore): directional light + light probe + reflections
 const xrLight = new XREstimatedLight(renderer);
-xrLight.directionalLight.castShadow = true;
+xrLight.directionalLight.castShadow = false;   // our own overhead light casts the shadow (it follows the object)
 xrLight.directionalLight.shadow.mapSize.set(1024, 1024);
 xrLight.addEventListener('estimationstart', () => {
-  scene.add(xrLight); hemi.visible = sun.visible = false;
+  scene.add(xrLight); hemi.visible = false; lightTarget.key = 0.7;
   if (xrLight.environment) scene.environment = xrLight.environment;
 });
-xrLight.addEventListener('estimationend', () => { scene.remove(xrLight); hemi.visible = sun.visible = true; scene.environment = currentEnv(); });
+xrLight.addEventListener('estimationend', () => { scene.remove(xrLight); hemi.visible = true; lightTarget.key = 1.6; scene.environment = currentEnv(); });
 
 if (navigator.xr?.isSessionSupported) {
   navigator.xr.isSessionSupported('immersive-ar').then(ok => {
