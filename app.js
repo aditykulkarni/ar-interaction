@@ -5,8 +5,8 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-import { buildDemoChair } from './demo-chair.js';
-import { loadRapier, PhysicsSim } from './physics.js';
+import { buildDemoChair } from './demo-chair.js?v=84191fa';
+import { loadRapier, PhysicsSim } from './physics.js?v=84191fa';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
