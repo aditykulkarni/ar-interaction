@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hands-on AR: interact with any 3D model</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<video id="cam" class="mirror" playsinline muted></video>
+<canvas id="gl"></canvas>
+<canvas id="overlay"></canvas>
+<button id="togglePanel" title="Show/hide panel">☰</button>
+
+<div id="panel">
+  <h1>Hands-on AR</h1>
+  <p class="hint">Pinch (or mouse-drag) a moving part to work it. Pinch any other part to move the object; pinch with both hands (or Shift/right-drag) to turn it. Swipe an open palm into it to shove it.</p>
+
+  <section>
+    <h2>Camera</h2>
+    <button id="start">Start camera + hand tracking</button>
+    <select id="facing"><option value="user">Front camera</option><option value="environment">Rear camera</option></select>
+    <label><input type="checkbox" id="light" checked> Match room lighting</label>
+    <label>View height <input type="range" id="camH" min="0.4" max="2.6" step="0.05" value="1.35"></label>
+    <label>View distance <input type="range" id="camD" min="0.8" max="6" step="0.05" value="2.6"></label>
+    <div id="status">Mouse mode. Start the camera to use your hands.</div>
+  </section>
+
+  <section>
+    <h2>Model</h2>
+    <label class="file">Load model (.glb, .gltf, .obj, .stl)<input type="file" id="file" accept=".glb,.gltf,.obj,.stl"></label>
+    <div class="row">
+      <label><input type="checkbox" id="zup" checked> Z-up (CAD)</label>
+      <select id="units">
+        <option value="fit">Fit to size</option>
+        <option value="mm">File is in mm</option>
+        <option value="cm">File is in cm</option>
+        <option value="m">File is in m</option>
+      </select>
+      <input type="number" id="fitSize" value="1" step="0.1" min="0.05" title="Fit size in metres"> m
+    </div>
+    <div class="row">
+      <button id="reload">Re-apply</button>
+      <button id="resetPose">Reset pose</button>
+      <button id="demo">Demo chair</button>
+    </div>
+    <label>Floor friction <input type="range" id="friction" min="0.2" max="8" step="0.1" value="1.6"></label>
+    <div id="modelInfo"></div>
+  </section>
+
+  <section>
+    <h2>Parts <label class="inline"><input type="checkbox" id="editMode"> click to select</label></h2>
+    <ul id="partList"></ul>
+    <div id="editor" hidden>
+      <h3 id="edName"></h3>
+      <label>Motion
+        <select id="edType">
+          <option value="fixed">Fixed (moves with the object)</option>
+          <option value="hinge">Hinge (rotates between limits)</option>
+          <option value="spin">Spin (rotates freely)</option>
+          <option value="slider">Slide (moves along an axis)</option>
+        </select></label>
+      <div id="edJoint">
+        <label>Axis <select id="edAxis"><option>x</option><option>y</option><option>z</option></select></label>
+        <label>Pivot
+          <select id="edPivot">
+            <option value="center">centre</option>
+            <option value="-x">−x face</option><option value="+x">+x face</option>
+            <option value="-y">−y face (bottom)</option><option value="+y">+y face (top)</option>
+            <option value="-z">−z face (back)</option><option value="+z">+z face (front)</option>
+          </select></label>
+        <div class="row" id="edLimits">
+          <label>Min <input type="number" id="edMin" step="1"></label>
+          <label>Max <input type="number" id="edMax" step="1"></label>
+          <span id="edUnit">°</span>
+        </div>
+        <label>Friction <input type="range" id="edFriction" min="0" max="10" step="0.1"></label>
+        <label><input type="checkbox" id="edSpring"> Springs back to rest</label>
+        <label id="edRollsL"><input type="checkbox" id="edRolls"> Turns when the object rolls (wheel)</label>
+      </div>
+    </div>
+    <div class="row">
+      <button id="saveCfg">Download setup</button>
+      <label class="file small">Load setup<input type="file" id="cfgFile" accept=".json"></label>
+    </div>
+  </section>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
