@@ -36,9 +36,10 @@
 
   <section>
     <h2>Model</h2>
-    <label class="file">Load model (.glb, .gltf, .obj, .stl)<input type="file" id="file" accept=".glb,.gltf,.obj,.stl"></label>
+    <label class="file">Load model (.glb, .zip, .gltf, .obj, .stl)<input type="file" id="file" multiple></label>
+    <div class="note">A .gltf with separate files: load the .zip, or select all its files together.</div>
     <div class="row">
-      <label><input type="checkbox" id="zup" checked> Z-up (CAD)</label>
+      <label title="glTF/GLB are always Y-up"><input type="checkbox" id="zup" checked> STL/OBJ is Z-up</label>
       <select id="units">
         <option value="fit">Fit to size</option>
         <option value="mm">File is in mm</option>

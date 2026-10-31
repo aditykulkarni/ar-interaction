@@ -200,7 +200,8 @@ function setModel(root, name) {
   // orientation and units
   const holder = new THREE.Group();
   holder.add(root);
-  if ($('zup').checked && name !== 'demo-chair') root.rotation.x -= Math.PI / 2;
+  // glTF is Y-up by definition; STL/OBJ straight from CAD are usually Z-up
+  if ($('zup').checked && /\.(stl|obj)$/i.test(name)) root.rotation.x -= Math.PI / 2;
   holder.updateMatrixWorld(true);
   let box = new THREE.Box3().setFromObject(holder), size = box.getSize(V3());
   const units = $('units').value;
@@ -245,22 +246,61 @@ function setModel(root, name) {
   $('modelInfo').textContent = `${name}: ${parts.length} part(s), ${moving} moving · ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} m`;
   renderPartList();
   startPhysics();
-  setStatus(moving ? `Loaded ${name}. Pinch a coloured part in the list to work it.` : `Loaded ${name}. No moving parts guessed: tick "click to select" and give parts a motion.`);
+  setStatus(moving ? `Loaded ${name}. Drag or pinch a moving part (green in the list) to work it.` : `Loaded ${name}. No moving parts guessed: tick "click to select" and give parts a motion.`);
 }
 
-async function loadFile(file) {
-  setStatus('Loading ' + file.name + '…');
-  const ext = file.name.split('.').pop().toLowerCase();
-  lastSource = { file };
+// Accepts one model file, a .gltf plus its .bin/texture files, or a .zip containing them (e.g. a Sketchfab download).
+async function unpack(files) {
+  const map = new Map();   // lower-case path and basename -> Blob
+  const add = (path, blob) => { const k = path.replace(/\\/g, '/').toLowerCase(); map.set(k, blob); map.set(k.split('/').pop(), blob); };
+  const list = [];
+  for (const f of files) {
+    if (/\.zip$/i.test(f.name)) {
+      const { unzipSync } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+      const entries = unzipSync(new Uint8Array(await f.arrayBuffer()));
+      for (const [path, bytes] of Object.entries(entries)) {
+        if (path.endsWith('/') || /(^|\/)(__MACOSX|\.)/.test(path)) continue;
+        const blob = new File([bytes], path.split('/').pop());
+        add(path, blob); list.push({ path, file: blob });
+      }
+    } else { add(f.name, f); list.push({ path: f.name, file: f }); }
+  }
+  const rank = p => ['glb', 'gltf', 'obj', 'stl'].indexOf(p.split('.').pop().toLowerCase());
+  const main = list.filter(e => rank(e.path) >= 0).sort((x, y) => rank(x.path) - rank(y.path) || x.path.length - y.path.length)[0];
+  return { map, main };
+}
+
+async function loadFile(input) {
+  const files = input instanceof FileList || Array.isArray(input) ? [...input] : [input];
+  lastSource = { file: files };
+  setStatus('Loading ' + files.map(f => f.name).join(', ') + '…');
+  let urls = [];
   try {
+    const { map, main } = await unpack(files);
+    if (!main) throw new Error('No .glb, .gltf, .obj or .stl file found');
+    const file = main.file, ext = main.path.split('.').pop().toLowerCase();
+    const dir = main.path.includes('/') ? main.path.slice(0, main.path.lastIndexOf('/') + 1).toLowerCase() : '';
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier(url => {
+      if (/^(data|blob|https?):/.test(url)) return url;
+      const clean = decodeURIComponent(url).replace(/^\.\//, '').toLowerCase();
+      const blob = map.get(dir + clean) || map.get(clean) || map.get(clean.split('/').pop());
+      if (!blob) return url;
+      const u = URL.createObjectURL(blob); urls.push(u); return u;
+    });
     let root;
     if (ext === 'glb' || ext === 'gltf') {
       const data = ext === 'glb' ? await file.arrayBuffer() : await file.text();
-      const gl = new GLTFLoader();
+      const gl = new GLTFLoader(manager);
       // compressed GLBs (Draco from Blender, Meshopt from gltfpack) load directly
       gl.setDRACOLoader(new DRACOLoader().setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/'));
       gl.setMeshoptDecoder(MeshoptDecoder);
-      root = (await gl.parseAsync(data, '')).scene;
+      try { root = (await gl.parseAsync(data, '')).scene; }
+      catch (e) {
+        if (/buffer|image|texture/i.test(e.message) && files.length === 1 && ext === 'gltf')
+          throw new Error(e.message + ' This .gltf needs its other files: load the whole .zip, or select the .gltf together with its .bin and textures.');
+        throw e;
+      }
     } else if (ext === 'obj') {
       root = new OBJLoader().parse(await file.text());
       root.traverse(m => { if (m.isMesh) m.material = new THREE.MeshStandardMaterial({ color: 0xb0b4ba, roughness: 0.5, metalness: 0.3 }); });
@@ -273,6 +313,7 @@ async function loadFile(file) {
       root.add(m);
     } else throw new Error('Unsupported file type .' + ext + ' (use GLB, glTF, OBJ or STL)');
     setModel(root, file.name);
+    setTimeout(() => urls.forEach(u => URL.revokeObjectURL(u)), 10000);
   } catch (e) {
     console.error(e);
     setStatus('Could not load model: ' + e.message, true);
@@ -280,16 +321,16 @@ async function loadFile(file) {
 }
 function loadDemo() { lastSource = { demo: true }; setModel(buildDemoChair(), 'demo-chair'); }
 
-$('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+$('file').onchange = e => e.target.files.length && loadFile([...e.target.files]);
 $('reload').onclick = () => lastSource?.file ? loadFile(lastSource.file) : loadDemo();
 $('demo').onclick = loadDemo;
 $('resetPose').onclick = resetPose;
 addEventListener('dragover', e => e.preventDefault());
 addEventListener('drop', e => {
   e.preventDefault();
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  if (f.name.endsWith('.json')) loadCfgFile(f); else loadFile(f);
+  const fs = [...e.dataTransfer.files];
+  if (!fs.length) return;
+  if (fs.length === 1 && fs[0].name.endsWith('.json')) loadCfgFile(fs[0]); else loadFile(fs);
 });
 
 // ---------------------------------------------------------------- part list + editor

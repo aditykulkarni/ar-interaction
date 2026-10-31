@@ -6,7 +6,7 @@ Load any 3D model (GLB, glTF, OBJ, STL), give its parts joints, and work it with
 
 1. Open the hosted page (or serve this folder locally: `python3 -m http.server`, then open http://localhost:8000).
 2. Click **Start camera + hand tracking** and allow camera access. The page must be served over HTTPS or localhost for the camera to work.
-3. A demo chair loads by default. Use **Load model** (or drag a file onto the page) to use your own.
+3. A demo chair loads by default. Use **Load model** (or drag files onto the page) to use your own: a `.glb`, a `.zip` (e.g. a Sketchfab glTF download), or a `.gltf` selected together with its `.bin` and texture files.
 
 ## Interacting
 
@@ -53,7 +53,7 @@ Joints can also be stored in the model itself as glTF `extras` (custom propertie
 - Export **GLB/glTF** if available, otherwise STEP and convert with Blender or FreeCAD.
 - Keep moving parts as **separate bodies** and give them clear names (`Seat`, `Backrest`, `Wheel_1`, `Door_Left`…).
 - Reduce the triangle count for phones (Blender's Decimate modifier works well), or export with Draco compression. Files load locally in the browser, so there is no upload limit, but aim for under ~20 MB on a phone.
-- CAD files are usually Z-up and in millimetres: leave **Z-up** ticked, and pick **File is in mm** for true size or **Fit to size** to scale it.
+- glTF/GLB are always Y-up. STL/OBJ straight from CAD are usually Z-up and in millimetres: leave **STL/OBJ is Z-up** ticked, and pick **File is in mm** for true size or **Fit to size** to scale it.
 
 ## Status / roadmap
 
