@@ -5,8 +5,10 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-import { buildDemoChair } from './demo-chair.js?v=84191fa';
-import { loadRapier, PhysicsSim } from './physics.js?v=84191fa';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
+import { buildDemoChair } from './demo-chair.js?v=202610311015';
+import { loadRapier, PhysicsSim } from './physics.js?v=202610311015';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -19,6 +21,8 @@ const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, alpha: true, antial
 renderer.setPixelRatio(devicePixelRatio);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // filmic response, closer to how a phone camera renders
+renderer.toneMappingExposure = 1.1;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, 1, 0.02, 60);
 function placeCamera() {
@@ -34,15 +38,27 @@ glCanvas.addEventListener('wheel', e => {
   placeCamera();
 }, { passive: false });
 
-const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+// Lighting = image-based light (reflections + soft fill) + one overhead key light for shadows.
+// The environment starts as a neutral studio room and is replaced by the live camera image when available,
+// so materials pick up the colours and brightness of the real room.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const roomEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+let videoEnvRT = null;
+const currentEnv = () => (videoEnvRT ? videoEnvRT.texture : roomEnv);
+scene.environment = roomEnv;
+scene.environmentIntensity = 0.8;
+const hemi = new THREE.HemisphereLight(0xffffff, 0x666666, 0.35);
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(1.5, 3, 1.5);
+sun.position.set(0.4, 4, 0.5);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
 Object.assign(sun.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 0.5, far: 12 });
-scene.add(hemi, sun);
+scene.add(hemi, sun, sun.target);
+const sunDir = sun.position.clone();
 // invisible floor that only catches shadows, so the object sits in the camera image
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.ShadowMaterial({ opacity: 0.35 }));
+const floor = new THREE.Mesh(new THREE.CircleGeometry(1.2, 48), new THREE.ShadowMaterial({ opacity: 0.3 }));
 floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 scene.add(floor);
@@ -695,17 +711,38 @@ function trackHands() {
 const PW = 64, PH = 36;
 const probe = document.createElement('canvas'); probe.width = PW; probe.height = PH;
 const pctx = probe.getContext('2d', { willReadFrequently: true });
-const lightTarget = { amb: 1, key: 1.6, color: new THREE.Color(1, 1, 1), dir: V3(1.5, 3, 1.5), torch: 0, torchAt: V3() };
+const lightTarget = { amb: 0.35, key: 1.6, env: 0.8, color: new THREE.Color(1, 1, 1), dir: V3(1.5, 3, 1.5), torch: 0, torchAt: V3() };
 const torch = new THREE.SpotLight(0xfff4e0, 0, 8, 0.32, 0.6, 1);
 torch.castShadow = true;
 torch.shadow.mapSize.set(1024, 1024);
 scene.add(torch, torch.target);
 const torchState = { seen: false };
 
+// Use the live camera image as the environment map (blurred, stretched to a panorama).
+// Not physically exact, but reflections and fill light now carry the real room's colours.
+const envCanvas = document.createElement('canvas'); envCanvas.width = 256; envCanvas.height = 128;
+const ectx = envCanvas.getContext('2d');
+const envTex = new THREE.CanvasTexture(envCanvas);
+envTex.mapping = THREE.EquirectangularReflectionMapping; envTex.colorSpace = THREE.SRGBColorSpace;
+function updateVideoEnv() {
+  if (!$('light').checked || video.readyState < 2 || xr) {
+    if (videoEnvRT && !xr) { videoEnvRT.dispose(); videoEnvRT = null; scene.environment = roomEnv; }
+    return;
+  }
+  ectx.filter = 'blur(6px)';
+  // mirror the frame side by side so the panorama wraps without a seam
+  ectx.drawImage(video, 0, 0, 128, 128);
+  ectx.save(); ectx.scale(-1, 1); ectx.drawImage(video, -256, 0, 128, 128); ectx.restore();
+  envTex.needsUpdate = true;
+  const rt = pmrem.fromEquirectangular(envTex);
+  videoEnvRT?.dispose();
+  videoEnvRT = rt; scene.environment = rt.texture;
+}
+
 function sampleLight() {
   if (!$('light').checked || video.readyState < 2) {
-    Object.assign(lightTarget, { amb: 1, key: 1.6, torch: 0 });
-    lightTarget.color.set(1, 1, 1); lightTarget.dir.set(1.5, 3, 1.5);
+    Object.assign(lightTarget, { amb: 0.35, key: 1.6, env: 0.8, torch: 0 });
+    lightTarget.color.set(1, 1, 1); lightTarget.dir.set(0.4, 4, 0.5);
     return;
   }
   pctx.drawImage(video, 0, 0, PW, PH);
@@ -725,20 +762,23 @@ function sampleLight() {
   for (let i = 0; i < n; i++) if (lum[i] >= thr) { cx += i % PW; cy += Math.floor(i / PW); cnt++; }
   const blobFrac = cnt / n;
   const contrast = (best - mean) / 255;
-  // general light: ambient from average, key light direction from where the brightest area is
-  lightTarget.amb = 0.25 + (mean / 255) * 2.2;
-  lightTarget.key = 0.4 + (mean / 255) * 1.8;
+  // general light: reflections/fill from the camera image (see updateVideoEnv), brightness from the average.
+  // Rooms are lit mostly from above, so the key light stays high and only leans toward the bright side.
+  lightTarget.amb = 0.1 + (mean / 255) * 0.5;
+  lightTarget.env = 0.3 + (mean / 255) * 1.6;
+  lightTarget.key = 0.5 + (mean / 255) * 1.6;
   const m = Math.max(r, g, b, 1e-3);
   lightTarget.color.setRGB(0.6 + 0.4 * r / m, 0.6 + 0.4 * g / m, 0.6 + 0.4 * b / m);
   if (cnt) {
     const s = lmToScreen({ x: (cx / cnt + 0.5) / PW, y: (cy / cnt + 0.5) / PH });
-    lightTarget.dir.set((s.x / innerWidth * 2 - 1) * 2.5, 3.2 - (s.y / innerHeight) * 2.4, 1.8);
+    lightTarget.dir.set((s.x / innerWidth * 2 - 1) * 0.8, 4, 0.5);
     // torch: a small, strong highlight. Aim the virtual torch at what's under that spot.
-    if (contrast > 0.3 && blobFrac < 0.2) {
+    // (bright windows and sunlit walls are big or not saturated; a torch beam is small and clipped white)
+    if (best > 240 && contrast > 0.45 && blobFrac < 0.05) {
       const hit = hitAt(s.x, s.y);
       let at = hit ? hit.point : null;
       if (!at) { rayAt(s.x, s.y); at = raycaster.ray.intersectPlane(floorPlane, V3()); }
-      if (at) { lightTarget.torchAt.copy(at); lightTarget.torch = Math.min(1, (contrast - 0.3) / 0.4 + 0.3); torchState.seen = true; return; }
+      if (at) { lightTarget.torchAt.copy(at); lightTarget.torch = Math.min(1, (contrast - 0.45) / 0.3 + 0.4); torchState.seen = true; return; }
     }
   }
   lightTarget.torch = 0;
@@ -756,12 +796,17 @@ let prev = performance.now(), frame = 0;
 function loop(now, xrFrame) {
   const dt = Math.min((now - prev) / 1000, 1 / 20); prev = now;
   if (xrFrame && xr) xrUpdate(xrFrame);
-  else { trackHands(); if (++frame % 3 === 0) sampleLight(); }
+  else { trackHands(); if (++frame % 3 === 0) sampleLight(); if (frame % 45 === 0) updateVideoEnv(); }
   const k = Math.min(1, dt * 4);
   hemi.intensity += (lightTarget.amb - hemi.intensity) * k;
+  scene.environmentIntensity += (lightTarget.env - scene.environmentIntensity) * k;
   sun.intensity += (lightTarget.key - sun.intensity) * k;
   hemi.color.lerp(lightTarget.color, k); sun.color.lerp(lightTarget.color, k);
-  sun.position.lerp(lightTarget.dir, k);
+  sunDir.lerp(lightTarget.dir, k);
+  // keep the key light, its shadow camera and the shadow-catching floor centred on the object
+  sun.target.position.set(world.position.x, floorY, world.position.z);
+  sun.position.copy(sun.target.position).add(sunDir);
+  floor.position.x = world.position.x; floor.position.z = world.position.z;
   // the torch is held near the camera, so the virtual spotlight shines from just beside it
   torch.position.copy(viewCamera().position).add(V3(0.15, -0.1, 0));
   torch.target.position.lerp(lightTarget.torchAt, lightTarget.torch > 0 ? Math.min(1, dt * 12) : 0);
@@ -775,9 +820,20 @@ renderer.setAnimationLoop(loop);
 // ---------------------------------------------------------------- Android AR (WebXR)
 // Chrome on Android finds real surfaces (hit-test). Tap a surface to place the object at true scale;
 // then touch and drag it: the drag is a spring on the touched point, so physics does the rest.
+// Plain glossy floors often give no hit-test results, so when the device reports its floor height
+// ('local-floor') we fall back to placing on that estimated floor where the phone is pointing.
 const reticle = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.09, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
 reticle.matrixAutoUpdate = false; reticle.visible = false;
 scene.add(reticle);
+// The phone's own light estimate (ARCore): directional light + light probe + reflections
+const xrLight = new XREstimatedLight(renderer);
+xrLight.directionalLight.castShadow = true;
+xrLight.directionalLight.shadow.mapSize.set(1024, 1024);
+xrLight.addEventListener('estimationstart', () => {
+  scene.add(xrLight); hemi.visible = sun.visible = false;
+  if (xrLight.environment) scene.environment = xrLight.environment;
+});
+xrLight.addEventListener('estimationend', () => { scene.remove(xrLight); hemi.visible = sun.visible = true; scene.environment = currentEnv(); });
 
 if (navigator.xr?.isSessionSupported) {
   navigator.xr.isSessionSupported('immersive-ar').then(ok => {
@@ -785,26 +841,33 @@ if (navigator.xr?.isSessionSupported) {
     else $('arNote').textContent = 'AR mode (real surfaces, true scale) needs Chrome on an Android phone with Google Play Services for AR.';
   }).catch(() => {});
 } else $('arNote').textContent = 'AR mode (real surfaces, true scale) needs Chrome on an Android phone, opened over HTTPS.';
+if (/Brave/i.test(navigator.userAgent) || navigator.brave) $('arNote').textContent = 'Tip: AR mode works best in Chrome. Other browsers may not detect surfaces.';
 
+const arHint = t => { $('arHint').textContent = t; };
 $('enterAR').onclick = async () => {
   try {
     const session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('arOverlay') },
+      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation'], domOverlay: { root: $('arOverlay') },
     });
+    const has = f => !session.enabledFeatures || session.enabledFeatures.includes(f);
+    const floorMode = session.enabledFeatures ? session.enabledFeatures.includes('local-floor') : false;
     renderer.xr.enabled = true;
-    renderer.xr.setReferenceSpaceType('local');
+    renderer.xr.setReferenceSpaceType(floorMode ? 'local-floor' : 'local');
     await renderer.xr.setSession(session);
     const refSpace = renderer.xr.getReferenceSpace();
-    const viewerSpace = await session.requestReferenceSpace('viewer');
-    const hitSource = await session.requestHitTestSource({ space: viewerSpace });
-    xr = { session, refSpace, hitSource, placed: false, held: new Map(), lastHit: null };
+    let hitSource = null;
+    if (has('hit-test')) {
+      try { hitSource = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') }); } catch (e) { console.warn(e); }
+    }
+    xr = { session, refSpace, hitSource, floorMode, placed: false, held: new Map(), target: null, targetKind: null, frames: 0, hits: 0 };
     if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
     video.hidden = true; $('panel').classList.add('hidden'); $('togglePanel').hidden = true;
     $('arOverlay').hidden = false;
-    $('arHint').textContent = 'Move the phone slowly to find a surface, then tap to place.';
+    arHint('Point at the floor and move the phone slowly…');
     $('physics').checked = true;
     sim.teardown(); world.visible = false;
-    lightTarget.amb = 1; lightTarget.key = 1.6; lightTarget.torch = 0;
+    lightTarget.amb = 0.35; lightTarget.key = 1.6; lightTarget.env = 0.8; lightTarget.torch = 0; lightTarget.dir.set(0.4, 4, 0.5);
+    videoEnvRT?.dispose(); videoEnvRT = null; scene.environment = roomEnv;
     session.addEventListener('selectstart', xrSelectStart);
     session.addEventListener('selectend', e => { const id = 'xr' + inputId(e.inputSource); grabEnd(id); xr?.held.delete(e.inputSource); });
     session.addEventListener('end', xrEnded);
@@ -813,12 +876,12 @@ $('enterAR').onclick = async () => {
 $('exitAR').addEventListener('beforexrselect', e => e.preventDefault());
 $('exitAR').onclick = () => xr?.session.end();
 $('placeAgain').addEventListener('beforexrselect', e => e.preventDefault());
-$('placeAgain').onclick = () => { if (xr) { xr.placed = false; sim.teardown(); world.visible = false; $('arHint').textContent = 'Tap a surface to place.'; } };
+$('placeAgain').onclick = () => { if (xr) { xr.placed = false; sim.teardown(); world.visible = false; arHint('Tap to place.'); } };
 
 const inputIds = new WeakMap(); let nextInputId = 1;
 function inputId(src) { if (!inputIds.has(src)) inputIds.set(src, nextInputId++); return inputIds.get(src); }
-function rayFromInput(src, frame) {
-  const pose = frame.getPose(src.targetRaySpace, xr.refSpace);
+function rayFromSpace(space, frame) {
+  const pose = frame.getPose(space, xr.refSpace);
   if (!pose) return false;
   const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
   raycaster.ray.origin.setFromMatrixPosition(m);
@@ -828,35 +891,64 @@ function rayFromInput(src, frame) {
 function xrSelectStart(e) {
   if (!xr) return;
   const frame = e.frame, src = e.inputSource;
-  if (xr.placed && rayFromInput(src, frame)) {
+  if (xr.placed && rayFromSpace(src.targetRaySpace, frame)) {
     const id = 'xr' + inputId(src);
     const hit = hitRay();
     if (hit) {
       const part = owningPart(hit.object, true);
-      if (sim.world && sim.grabStart(id, hit, viewCamera())) { grabs.set(id, { physics: true, part, free: !part, sx: 0, sy: 0 }); xr.held.set(src, id); return; }
+      if (sim.world && sim.grabStart(id, hit, viewCamera())) { grabs.set(id, { physics: true, part, free: !part, sx: 0, sy: 0 }); xr.held.set(src, id); }
     }
+    return;   // once placed, taps never move it; use "Place again"
   }
-  if (xr.lastHit) placeAt(xr.lastHit);
+  if (!xr.placed) {
+    // a tap places at the current target; with no target, 1.5 m ahead at the estimated floor
+    let p = xr.target;
+    if (!p && rayFromSpace(src.targetRaySpace, frame)) {
+      const r = raycaster.ray, fwd = V3(r.direction.x, 0, r.direction.z).normalize();
+      p = r.origin.clone().addScaledVector(fwd, 1.5); p.y = xr.floorMode ? 0 : r.origin.y - 1.4;
+    }
+    if (p) placeAt(p);
+  }
 }
-function placeAt(m) {
-  const pos = V3().setFromMatrixPosition(m);
+function placeAt(pos) {
   sim.teardown();
   setFloor(pos.y);
   const cam = viewCamera().getWorldPosition(V3());
   home.copy(pos); home.yaw = Math.atan2(cam.x - pos.x, cam.z - pos.z);   // front of the model faces you
-  xr.placed = true; world.visible = true;
+  xr.placed = true; world.visible = true; reticle.visible = false;
   resetPose();
-  $('arHint').textContent = 'Drag the object to push, tip or roll it. Drag a moving part to work it.';
+  arHint('Placed. Drag the object to push, tip or roll it; drag a moving part to work it.');
 }
 function xrUpdate(frame) {
-  const res = frame.getHitTestResults(xr.hitSource);
-  if (res.length) {
-    const pose = res[0].getPose(xr.refSpace);
-    reticle.matrix.fromArray(pose.transform.matrix);
-    xr.lastHit = reticle.matrix.clone();
-    reticle.visible = !xr.placed;
-  } else { reticle.visible = false; xr.lastHit = null; }
-  for (const [src, id] of xr.held) if (rayFromInput(src, frame)) sim.grabMove(id, raycaster.ray);
+  xr.frames++;
+  if (!xr.placed) {
+    let found = null, kind = null;
+    const res = xr.hitSource ? frame.getHitTestResults(xr.hitSource) : [];
+    if (res.length) {
+      const m = new THREE.Matrix4().fromArray(res[0].getPose(xr.refSpace).transform.matrix);
+      found = V3().setFromMatrixPosition(m); kind = 'surface'; xr.hits++;
+    } else if (xr.floorMode) {
+      const vp = frame.getViewerPose(xr.refSpace);
+      if (vp) {
+        const m = new THREE.Matrix4().fromArray(vp.transform.matrix);
+        const o = V3().setFromMatrixPosition(m), d = V3(0, 0, -1).transformDirection(m);
+        if (d.y < -0.1) { const t = -o.y / d.y; if (t > 0 && t < 6) { found = o.addScaledVector(d, t); kind = 'floor'; } }
+      }
+    }
+    xr.target = found; xr.targetKind = kind;
+    if (found) {
+      reticle.matrix.makeTranslation(found.x, found.y, found.z);
+      reticle.matrixWorldNeedsUpdate = true;
+      reticle.material.color.set(kind === 'surface' ? 0xffffff : 0xffd54a);
+      reticle.visible = true;
+    } else reticle.visible = false;
+    if (xr.frames % 15 === 0) arHint(
+      kind === 'surface' ? 'Surface found: tap to place.'
+      : kind === 'floor' ? 'Using the estimated floor (yellow ring): tap to place. Plain shiny floors are hard to detect.'
+      : xr.hitSource || xr.floorMode ? 'Point the phone down at the floor and move it slowly… (or tap to place 1.5 m ahead)'
+      : 'This browser does not report surfaces. Tap to place 1.5 m ahead, or try Chrome.');
+  }
+  for (const [src, id] of xr.held) if (rayFromSpace(src.targetRaySpace, frame)) sim.grabMove(id, raycaster.ray);
 }
 function xrEnded() {
   xr = null; reticle.visible = false;

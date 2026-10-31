@@ -22,11 +22,11 @@ With **Real physics** on (the default), the model is simulated with [Rapier](htt
 
 ## Android AR mode
 
-On Chrome for Android (with Google Play Services for AR), an **Enter AR** button appears. Move the phone to find a surface (floor, desk), tap to place the model at true scale, then touch and drag it to push, tip or roll it. **Place again** moves it to another surface. Hand tracking and torch lighting are webcam-mode features; in AR you interact by touch. iPhone Safari does not support WebXR AR, so iPhone would need a native ARKit app.
+On Chrome for Android (with Google Play Services for AR), an **Enter AR** button appears. Move the phone to find a surface (floor, desk): a white ring marks a detected surface, a yellow ring the phone's estimated floor height (used when plain or shiny floors can't be detected). Tap to place the model at true scale, then touch and drag it to push, tip or roll it. **Place again** moves it to another surface. Hand tracking and torch lighting are webcam-mode features; in AR you interact by touch. iPhone Safari does not support WebXR AR, so iPhone would need a native ARKit app.
 
 Model size in AR comes from the **Model** settings: pick the file's units for true size, or **Fit to size** with e.g. `0.3` m for a tabletop miniature.
 
-With **Match room lighting** on, the overall brightness and colour of the camera image also light the model.
+With **Match room lighting** on, the live camera image is used as the model's environment light (reflections and fill), its brightness sets exposure, and the key light stays overhead so shadows fall under the object. In AR mode the phone's own light estimate is used instead.
 
 ## Making models move
 
