@@ -7,9 +7,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
-import { XRHands } from './xrhands.js?v=202610311038';
-import { buildDemoChair } from './demo-chair.js?v=202610311038';
-import { loadRapier, PhysicsSim } from './physics.js?v=202610311038';
+import { XRHands } from './xrhands.js?v=202610311102';
+import { buildDemoChair } from './demo-chair.js?v=202610311102';
+import { loadRapier, PhysicsSim } from './physics.js?v=202610311102';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -853,13 +853,21 @@ if (navigator.xr?.isSessionSupported) {
 if (/Brave/i.test(navigator.userAgent) || navigator.brave) $('arNote').textContent = 'Tip: AR mode works best in Chrome. Other browsers may not detect surfaces.';
 
 const arHint = t => { $('arHint').textContent = t; };
+const NO_DEPTH = new URLSearchParams(location.search).has('nodepth');
+// three.js asks for GPU depth every XR frame whenever depth-sensing is on. With CPU depth (what we use to
+// read depth at the hand) that call throws and kills the frame loop, so make it fail quietly instead.
+if (window.XRWebGLBinding?.prototype.getDepthInformation) {
+  const orig = XRWebGLBinding.prototype.getDepthInformation;
+  XRWebGLBinding.prototype.getDepthInformation = function (view) { try { return orig.call(this, view); } catch { return null; } };
+}
 $('enterAR').onclick = async () => {
   try {
     const session = await navigator.xr.requestSession('immersive-ar', {
-      // Note: no 'depth-sensing' here. three.js reads GPU depth every frame when that feature is on, which throws
-      // on phones that only offer CPU depth and stops the whole AR frame loop. Hand depth is estimated instead.
-      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation', 'camera-access'],
+      // depth-sensing = ARCore Depth API (depth from motion, no lidar needed). Used to place your hand in 3D.
+      // Add ?nodepth to the URL to turn it off if a phone misbehaves.
+      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation', 'camera-access', ...(NO_DEPTH ? [] : ['depth-sensing'])],
       domOverlay: { root: $('arOverlay') },
+      ...(NO_DEPTH ? {} : { depthSensing: { usagePreference: ['cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] } }),
     });
     const has = f => !session.enabledFeatures || session.enabledFeatures.includes(f);
     const floorMode = session.enabledFeatures ? session.enabledFeatures.includes('local-floor') : false;
