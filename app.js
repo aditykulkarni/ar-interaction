@@ -7,9 +7,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
-import { XRHands } from './xrhands.js?v=202610311030';
-import { buildDemoChair } from './demo-chair.js?v=202610311030';
-import { loadRapier, PhysicsSim } from './physics.js?v=202610311030';
+import { XRHands } from './xrhands.js?v=202610311038';
+import { buildDemoChair } from './demo-chair.js?v=202610311038';
+import { loadRapier, PhysicsSim } from './physics.js?v=202610311038';
 
 const $ = id => document.getElementById(id);
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -804,7 +804,7 @@ resize();
 let prev = performance.now(), frame = 0;
 function loop(now, xrFrame) {
   const dt = Math.min((now - prev) / 1000, 1 / 20); prev = now;
-  if (xrFrame && xr) xrUpdate(xrFrame);
+  if (xrFrame && xr) { try { xrUpdate(xrFrame); } catch (e) { console.error(e); arHint('AR error: ' + e.message); } }
   else { trackHands(); if (++frame % 3 === 0) sampleLight(); if (frame % 45 === 0) updateVideoEnv(); }
   const k = Math.min(1, dt * 4);
   hemi.intensity += (lightTarget.amb - hemi.intensity) * k;
@@ -856,9 +856,10 @@ const arHint = t => { $('arHint').textContent = t; };
 $('enterAR').onclick = async () => {
   try {
     const session = await navigator.xr.requestSession('immersive-ar', {
-      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation', 'camera-access', 'depth-sensing'],
+      // Note: no 'depth-sensing' here. three.js reads GPU depth every frame when that feature is on, which throws
+      // on phones that only offer CPU depth and stops the whole AR frame loop. Hand depth is estimated instead.
+      optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation', 'camera-access'],
       domOverlay: { root: $('arOverlay') },
-      depthSensing: { usagePreference: ['cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] },
     });
     const has = f => !session.enabledFeatures || session.enabledFeatures.includes(f);
     const floorMode = session.enabledFeatures ? session.enabledFeatures.includes('local-floor') : false;
@@ -964,8 +965,9 @@ function xrUpdate(frame) {
   }
   for (const [src, id] of xr.held) if (rayFromSpace(src.targetRaySpace, frame)) sim.grabMove(id, raycaster.ray);
   if (xr.placed) {
-    const hands = xrHands.update(frame, xr.refSpace);
-    applyXRHands(hands);
+    // hand tracking must never break placement or rendering
+    try { applyXRHands(xrHands.update(frame, xr.refSpace)); }
+    catch (e) { console.error(e); xrHands.status = 'error: ' + e.message; }
     if (xr.frames % 15 === 0) {
       const hs = xrHands.status;
       const touching = lastTouch.length ? ' · ' + lastTouch.map(t => `${t.finger} ${t.force.toFixed(1)} N`).join(', ') : '';
